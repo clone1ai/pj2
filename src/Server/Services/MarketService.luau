@@ -1,256 +1,156 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
-local ServerScriptService = game:GetService("ServerScriptService")
 
--- Dependencies
 local DataService = require(script.Parent.DataService)
+local TycoonService = require(script.Parent.TycoonService)
 local GameConstants = require(ReplicatedStorage.Configs.GameConstants)
--- Point to Classes folder. Argon usually maps src/Server/Classes -> ServerScriptService.Classes
-local BrainrotItem = require(script.Parent.Parent.Classes.BrainrotItem) 
-
--- Lazy Load
-local TycoonService = nil 
 
 local MarketService = {}
-MarketService.ActiveListings = {} -- { ListingId = { SellerUserId = 123, Price = 100, Item = {...} } }
+MarketService.ActiveListings = {} 
 
 function MarketService:Init()
-    local remotesFolder = ReplicatedStorage:WaitForChild("Remotes")
+    local remotes = ReplicatedStorage:WaitForChild("Remotes")
     
-    -- 1. Quick Sell
-    local sellFunc = remotesFolder:FindFirstChild(GameConstants.Events.QUICK_SELL)
-    if not sellFunc then
-        sellFunc = Instance.new("RemoteFunction")
-        sellFunc.Name = GameConstants.Events.QUICK_SELL
-        sellFunc.Parent = remotesFolder
+    local function createRemote(name, isFunction)
+        if not remotes:FindFirstChild(name) then
+            local r = isFunction and Instance.new("RemoteFunction") or Instance.new("RemoteEvent")
+            r.Name = name
+            r.Parent = remotes
+        end
     end
-    sellFunc.OnServerInvoke = function(player, itemUUID) return self:QuickSell(player, itemUUID) end
     
-    -- 2. Post Listing
-    local postFunc = remotesFolder:FindFirstChild(GameConstants.Events.POST_LISTING)
-    if not postFunc then
-        postFunc = Instance.new("RemoteFunction")
-        postFunc.Name = GameConstants.Events.POST_LISTING
-        postFunc.Parent = remotesFolder
-    end
-    postFunc.OnServerInvoke = function(player, itemUUID, price) return self:PostListing(player, itemUUID, price) end
-    
-    -- 3. Buy Listing
-    local buyFunc = remotesFolder:FindFirstChild(GameConstants.Events.BUY_LISTING)
-    if not buyFunc then
-        buyFunc = Instance.new("RemoteFunction")
-        buyFunc.Name = GameConstants.Events.BUY_LISTING
-        buyFunc.Parent = remotesFolder
-    end
-    buyFunc.OnServerInvoke = function(player, listingId) return self:BuyListing(player, listingId) end
+    createRemote(GameConstants.Events.POST_LISTING, true)
+    createRemote(GameConstants.Events.BUY_LISTING, true)
+    createRemote(GameConstants.Events.REFRESH_MARKET, false)
 
-    -- 4. Market Data Sync
-    local refreshEvent = remotesFolder:FindFirstChild(GameConstants.Events.REFRESH_MARKET)
-    if not refreshEvent then
-        refreshEvent = Instance.new("RemoteEvent")
-        refreshEvent.Name = GameConstants.Events.REFRESH_MARKET
-        refreshEvent.Parent = remotesFolder
+    -- Bind Functions
+    remotes[GameConstants.Events.POST_LISTING].OnServerInvoke = function(player, itemUUID, price)
+        return self:PostListing(player, itemUUID, price)
+    end
+    
+    remotes[GameConstants.Events.BUY_LISTING].OnServerInvoke = function(player, listingID)
+        return self:BuyListing(player, listingID)
     end
 end
 
 function MarketService:Start()
-    TycoonService = require(script.Parent.TycoonService)
-    
-    -- Sync market to new players
-    Players.PlayerAdded:Connect(function(player)
-        task.wait(2) -- Wait for load
-        self:SyncMarket(player)
-    end)
-    
-    -- [NEW] Start Server Injection Loop (Money Sink)
+    print("   -> MarketService Started")
+    -- Broadcast loop
     task.spawn(function()
         while true do
-            task.wait(GameConstants.INJECTION_INTERVAL or 300)
-            self:InjectServerItem()
+            task.wait(5)
+            self:BroadcastMarket()
         end
     end)
-    
-    print("   -> MarketService Started (P2P + Injection Active)")
 end
 
--- ==========================================
--- SERVER INJECTION (MONEY SINK)
--- ==========================================
-
-function MarketService:InjectServerItem()
-    -- 1. Generate High Tier Item
-    local newItemObject = BrainrotItem.new() 
-    local itemData = newItemObject.Data
-    
-    -- 2. Mark up the price (2x to 5x value)
-    local markup = math.random(20, 50) / 10 
-    local listingPrice = math.floor(itemData.FloorPrice * markup)
-    
-    -- 3. Create Fake Listing
-    local listingId = HttpService:GenerateGUID(false)
-    self.ActiveListings[listingId] = {
-        Id = listingId,
-        SellerUserId = GameConstants.SYSTEM_USER_ID or -1,
-        SellerName = "SYSTEM (High Tier)",
-        Price = listingPrice,
-        Item = itemData,
-        Timestamp = os.time()
-    }
-    
-    self:SyncMarket()
-    print(string.format("💉 INJECTION: System listed %s for $%d", itemData.Model, listingPrice))
-end
-
--- ==========================================
--- P2P TRADING LOGIC
--- ==========================================
-
-function MarketService:PostListing(player, itemUUID, price)
-    -- Validation
-    if type(price) ~= "number" or price <= 0 then return { Success = false, Msg = "Invalid Price" } end
+-- [[ POST A LISTING ]] --
+function MarketService:PostListing(player, itemUUID, askPrice)
+    -- 1. Sanitize Input
+    if type(askPrice) ~= "number" or askPrice <= 0 then 
+        return false, "Invalid Price" 
+    end
     
     local profile = DataService:GetProfile(player)
-    if not profile then return false end
+    if not profile then 
+        return false, "No Profile Loaded" 
+    end
     
-    -- Find Item
-    local itemIndex, itemData = self:FindItem(profile.Data.Inventory, itemUUID)
-    if not itemData then return { Success = false, Msg = "Item not found" } end
+    -- 2. ROBUST SEARCH (Fixes Type Mismatch)
+    local inventory = profile.Data.Inventory
+    local foundItem = nil
+    local foundIndex = nil
+    local targetUUID = tostring(itemUUID) -- Force String for comparison
     
-    -- Check Shelves (Remove if placed)
-    for shelfIndex, placedUUID in pairs(profile.Data.ShelfLayout) do
-        if placedUUID == itemUUID then
-            if TycoonService then TycoonService:RemoveItem(player, tonumber(shelfIndex)) end
-            profile.Data.ShelfLayout[shelfIndex] = nil
+    for i, item in ipairs(inventory) do
+        -- Compare as strings to prevent "123" vs 123 errors
+        if tostring(item.UUID) == targetUUID then
+            foundItem = item
+            foundIndex = i
             break
         end
     end
+
+    if not foundItem then 
+        -- Debugging Output for you
+        warn("❌ MarketService: Item Check Failed for " .. player.Name)
+        print("   > Looking for UUID:", targetUUID)
+        print("   > First 3 items in inventory:")
+        for i = 1, math.min(3, #inventory) do
+            print("     [" .. i .. "] " .. tostring(inventory[i].UUID))
+        end
+        return false, "Item not found" 
+    end
     
-    -- ESCROW: Remove from Inventory
-    table.remove(profile.Data.Inventory, itemIndex)
+    -- 3. Check if Placed (Tycoon Check)
+    -- We pass the original item.UUID to be safe
+    if TycoonService:IsItemPlaced(player, foundItem.UUID) then
+        return false, "Item is currently on a shelf!"
+    end
     
-    -- Create Listing
-    local listingId = HttpService:GenerateGUID(false)
-    self.ActiveListings[listingId] = {
-        Id = listingId,
+    -- 4. Execute Listing
+    table.remove(inventory, foundIndex) -- Remove from player
+    DataService:SyncClient(player)      -- Update player UI
+    
+    local listingID = HttpService:GenerateGUID(false)
+    self.ActiveListings[listingID] = {
+        ID = listingID,
         SellerUserId = player.UserId,
         SellerName = player.Name,
-        Price = price,
-        Item = itemData,
+        Price = math.floor(askPrice),
+        ItemData = foundItem,
         Timestamp = os.time()
     }
     
-    print(player.Name .. " listed " .. itemData.Model .. " for $" .. price)
-    self:SyncMarket()
-    
-    return { Success = true }
+    print("✅ LISTING SUCCESS: " .. foundItem.Model .. " for $" .. askPrice)
+    self:BroadcastMarket()
+    return true, "Listed Successfully"
 end
 
-function MarketService:BuyListing(buyer, listingId)
-    local listing = self.ActiveListings[listingId]
-    if not listing then return { Success = false, Msg = "Listing no longer available" } end
-    
-    -- Prevent buying own item
-    if listing.SellerUserId == buyer.UserId then return { Success = false, Msg = "Cannot buy your own item" } end
+-- [[ BUY A LISTING ]] --
+function MarketService:BuyListing(buyer, listingID)
+    local listing = self.ActiveListings[listingID]
+    if not listing then return false, "Listing no longer exists" end
     
     local buyerProfile = DataService:GetProfile(buyer)
-    if not buyerProfile then return false end
+    if not buyerProfile then return false, "Profile Error" end
     
-    -- 1. Check Funds
+    if listing.SellerUserId == buyer.UserId then
+        return false, "You cannot buy your own item"
+    end
+    
     if buyerProfile.Data.RizzCoins < listing.Price then
-        return { Success = false, Msg = "Not enough Rizz Coins" }
-    end
-    
-    -- 2. Handle Seller (Real Player vs System)
-    local isSystem = (listing.SellerUserId == (GameConstants.SYSTEM_USER_ID or -1))
-    local seller = nil
-    
-    if not isSystem then
-        seller = Players:GetPlayerByUserId(listing.SellerUserId)
-        if not seller then
-            return { Success = false, Msg = "Seller is offline (Transaction cancelled)" }
-        end
-    end
-    
-    -- 3. EXECUTE TRANSACTION
-    
-    -- A. Deduct from Buyer
-    buyerProfile.Data.RizzCoins -= listing.Price
-    table.insert(buyerProfile.Data.Inventory, listing.Item)
-    
-    -- B. Pay Seller (Only if Real Player)
-    if not isSystem and seller then
-        local sellerProfile = DataService:GetProfile(seller)
-        if sellerProfile then
-            sellerProfile.Data.RizzCoins += listing.Price
-            seller:SetAttribute("RizzCoins", sellerProfile.Data.RizzCoins)
-            print("💰 " .. buyer.Name .. " paid $" .. listing.Price .. " to " .. seller.Name)
-        end
-    else
-        print("🔥 MONEY SINK: " .. buyer.Name .. " paid $" .. listing.Price .. " to Server. Money destroyed.")
-    end
-    
-    -- 4. Clean Up
-    self.ActiveListings[listingId] = nil
-    self:SyncMarket()
-    
-    return { Success = true }
-end
-
-function MarketService:SyncMarket(specificPlayer)
-    -- Convert dictionary to array for Network
-    local marketArray = {}
-    for _, listing in pairs(self.ActiveListings) do
-        table.insert(marketArray, listing)
-    end
-    
-    local remote = ReplicatedStorage.Remotes:FindFirstChild(GameConstants.Events.REFRESH_MARKET)
-    if remote then
-        if specificPlayer then
-            remote:FireClient(specificPlayer, marketArray)
-        else
-            remote:FireAllClients(marketArray)
-        end
-    end
-end
-
--- ==========================================
--- QUICK SELL LOGIC
--- ==========================================
-
-function MarketService:QuickSell(player, itemUUID)
-    local profile = DataService:GetProfile(player)
-    if not profile then return false end
-    
-    local itemIndex, itemData = self:FindItem(profile.Data.Inventory, itemUUID)
-    if not itemData then return false end
-    
-    -- Remove from Shelf if active
-    for shelfIndex, placedUUID in pairs(profile.Data.ShelfLayout) do
-        if placedUUID == itemUUID then
-            if TycoonService then TycoonService:RemoveItem(player, tonumber(shelfIndex)) end
-            profile.Data.ShelfLayout[shelfIndex] = nil
-            break
-        end
+        return false, "Insufficient Funds"
     end
     
     -- Transaction
-    local sellValue = math.floor(itemData.FloorPrice * GameConstants.QUICK_SELL_PERCENT)
-    profile.Data.RizzCoins += sellValue
-    table.remove(profile.Data.Inventory, itemIndex)
+    buyerProfile.Data.RizzCoins -= listing.Price
+    buyer:SetAttribute("RizzCoins", buyerProfile.Data.RizzCoins)
     
-    -- Update Client
-    player:SetAttribute("RizzCoins", profile.Data.RizzCoins)
+    table.insert(buyerProfile.Data.Inventory, listing.ItemData)
+    DataService:SyncClient(buyer)
     
-    return { Success = true, SoldAmount = sellValue }
+    local sellerPlayer = Players:GetPlayerByUserId(listing.SellerUserId)
+    if sellerPlayer then
+        local sellerProfile = DataService:GetProfile(sellerPlayer)
+        if sellerProfile then
+            sellerProfile.Data.RizzCoins += listing.Price
+            sellerPlayer:SetAttribute("RizzCoins", sellerProfile.Data.RizzCoins)
+        end
+    end
+    
+    self.ActiveListings[listingID] = nil
+    self:BroadcastMarket()
+    return true, "Purchase Successful"
 end
 
--- Helper
-function MarketService:FindItem(inventory, uuid)
-    for i, item in ipairs(inventory) do
-        if item.UUID == uuid then return i, item end
+function MarketService:BroadcastMarket()
+    local list = {}
+    for _, data in pairs(self.ActiveListings) do
+        table.insert(list, data)
     end
-    return nil, nil
+    ReplicatedStorage.Remotes[GameConstants.Events.REFRESH_MARKET]:FireAllClients(list)
 end
 
 return MarketService

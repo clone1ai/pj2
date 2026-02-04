@@ -2,30 +2,30 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
 local GameConstants = require(ReplicatedStorage.Configs.GameConstants)
--- Lazy load sibling controller
-local InventoryController = nil 
+local InventoryController = nil -- Lazy load
 
 local MarketController = {}
 MarketController.Listings = {}
+MarketController.IsProcessing = false
 
 function MarketController:Init()
-    local player = Players.LocalPlayer
-    local gui = player:WaitForChild("PlayerGui")
-    self.MainUI = gui:WaitForChild("MainUI", 10)
-    
-    if self.MainUI then
-        self:SetupUI()
-    end
+    -- Internal setup only
 end
 
 function MarketController:Start()
-    -- Load Sibling
+    -- 1. Get InventoryController reference
     InventoryController = require(script.Parent.InventoryController)
     
-    local remotes = ReplicatedStorage:WaitForChild("Remotes")
+    local player = Players.LocalPlayer
+    local gui = player:WaitForChild("PlayerGui")
+    self.MainUI = gui:WaitForChild("MainUI") 
     
-    -- Listen for Market Updates
+    self:SetupUI()
+    
+    -- Networking
+    local remotes = ReplicatedStorage:WaitForChild("Remotes")
     local refreshEvent = remotes:WaitForChild(GameConstants.Events.REFRESH_MARKET)
+    
     refreshEvent.OnClientEvent:Connect(function(listings)
         self.Listings = listings
         self:RenderMarket()
@@ -35,168 +35,141 @@ function MarketController:Start()
 end
 
 function MarketController:SetupUI()
-    -- 1. Setup List Button (In Inventory Frame)
-    local invFrame = self.MainUI:FindFirstChild("InventoryFrame")
-    if invFrame then
-        local listBtn = invFrame:FindFirstChild("ListButton")
-        local priceInput = invFrame:FindFirstChild("PriceInput")
-        
-        if listBtn and priceInput then
-            -- Connect Click
-            listBtn.MouseButton1Click:Connect(function()
-                local price = tonumber(priceInput.Text)
-                if price then
-                    self:RequestList(price)
-                else
-                    warn("Please enter a valid number")
-                    priceInput.Text = "Invalid!"
-                    task.wait(1)
-                    priceInput.Text = ""
-                end
-            end)
-            
-            -- Visibility Loop (Only show when item selected)
-            -- We poll InventoryController for selection state
-            task.spawn(function()
-                while true do
-                    if InventoryController and InventoryController:GetSelectedItem() then
-                        listBtn.Visible = true
-                        priceInput.Visible = true
-                    else
-                        listBtn.Visible = false
-                        priceInput.Visible = false
-                    end
-                    task.wait(0.2)
-                end
-            end)
-        end
-    end
+    -- The list button is handled inside InventoryController for better modularity
 end
 
--- ==========================================
--- LOGIC: BUYING
--- ==========================================
-
+-- [[ RENDER LOGIC ]] --
 function MarketController:RenderMarket()
+    if not self.MainUI then return end
     local frame = self.MainUI:FindFirstChild("MarketFrame")
     if not frame then return end
     
     local container = frame:FindFirstChild("Container")
     if not container then return end
     
-    -- Clear Old
     for _, child in ipairs(container:GetChildren()) do
         if child:IsA("GuiObject") then child:Destroy() end
     end
     
-    -- Render New
     for _, listing in ipairs(self.Listings) do
-        local card = Instance.new("ImageButton") -- clickable card
-        card.Name = listing.Id
-        card.Parent = container
-        card.BackgroundColor3 = self:GetRarityColor(listing.Item.Element)
-        card.AutoButtonColor = true
-        
-        -- Text: Model Name
-        local title = Instance.new("TextLabel")
-        title.Text = listing.Item.Model
-        title.Font = Enum.Font.FredokaOne
-        title.TextSize = 14
-        title.TextColor3 = Color3.new(1,1,1)
-        title.BackgroundTransparency = 1
-        title.Size = UDim2.new(1,0,0.3,0)
-        title.Parent = card
-        
-        -- Text: Price
-        local price = Instance.new("TextLabel")
-        price.Text = "$" .. listing.Price
-        price.Font = Enum.Font.FredokaOne
-        price.TextSize = 18
-        price.TextColor3 = Color3.fromRGB(100, 255, 100)
-        price.BackgroundTransparency = 1
-        price.Size = UDim2.new(1,0,0.3,0)
-        price.Position = UDim2.new(0,0,0.3,0)
-        price.Parent = card
-        
-        -- Text: Seller
-        local seller = Instance.new("TextLabel")
-        seller.Text = "Seller:\n" .. listing.SellerName
-        seller.Font = Enum.Font.Code
-        seller.TextSize = 10
-        seller.TextColor3 = Color3.new(0.8,0.8,0.8)
-        seller.BackgroundTransparency = 1
-        seller.Size = UDim2.new(1,0,0.3,0)
-        seller.Position = UDim2.new(0,0,0.65,0)
-        seller.Parent = card
-        
-        -- Click to Buy
-        card.MouseButton1Click:Connect(function()
-            self:RequestBuy(listing)
-        end)
+        self:CreateListingCard(listing, container)
     end
 end
 
+function MarketController:CreateListingCard(listing, container)
+    local card = Instance.new("ImageButton")
+    card.Name = listing.ID
+    card.BackgroundColor3 = self:GetRarityColor(listing.ItemData.Element)
+    card.Size = UDim2.new(0, 100, 0, 120)
+    card.Parent = container
+    
+    local uiList = Instance.new("UIListLayout")
+    uiList.Parent = card
+    uiList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    uiList.Padding = UDim.new(0, 5)
+    
+    local nameLbl = Instance.new("TextLabel")
+    nameLbl.Text = listing.ItemData.Model
+    nameLbl.Size = UDim2.new(1,0,0.3,0)
+    nameLbl.BackgroundTransparency = 1
+    nameLbl.Font = Enum.Font.FredokaOne
+    nameLbl.Parent = card
+    
+    local priceLbl = Instance.new("TextLabel")
+    priceLbl.Text = "$" .. listing.Price
+    priceLbl.TextColor3 = Color3.fromRGB(100, 255, 100)
+    priceLbl.Size = UDim2.new(1,0,0.3,0)
+    priceLbl.BackgroundTransparency = 1
+    priceLbl.Font = Enum.Font.FredokaOne
+    priceLbl.Parent = card
+
+    card.MouseButton1Click:Connect(function()
+        self:RequestBuy(listing)
+    end)
+end
+
+-- [[ INTERACTION LOGIC ]] --
 function MarketController:RequestBuy(listing)
-    -- Sanity check: Don't buy own item
+    if self.IsProcessing then return end
+    
     if listing.SellerUserId == Players.LocalPlayer.UserId then
-        warn("You cannot buy your own item!")
+        warn("Cannot buy your own item.")
         return
     end
     
-    print("Attempting to buy...")
+    self.IsProcessing = true
+    
     local remotes = ReplicatedStorage:WaitForChild("Remotes")
     local buyFunc = remotes:WaitForChild(GameConstants.Events.BUY_LISTING)
     
-    local success, result = pcall(function()
-        return buyFunc:InvokeServer(listing.Id)
+    local success, resultBool, resultMsg = pcall(function()
+        return buyFunc:InvokeServer(listing.ID)
     end)
     
-    if success and result.Success then
+    self.IsProcessing = false
+    
+    if success and resultBool then
         print("✅ Purchase Successful!")
     else
-        warn("Purchase Failed: " .. tostring(result.Msg))
+        warn("Purchase Failed: " .. tostring(resultMsg))
     end
 end
 
--- ==========================================
--- LOGIC: LISTING
--- ==========================================
-
 function MarketController:RequestList(price)
-    if not InventoryController then return end
+    if not InventoryController then 
+        warn("⚠️ MarketController: InventoryController not found!")
+        return 
+    end
     
+    -- [[ FIX: use GetSelectedItem() instead of .SelectedItemID ]] --
     local uuid = InventoryController:GetSelectedItem()
-    if not uuid then return end
     
-    print("Listing item for $" .. price)
+    if not uuid then 
+        warn("⚠️ MarketController: No Item UUID selected!")
+        return 
+    end
+    
+    if self.IsProcessing then return end
+    self.IsProcessing = true 
+    
+    print("📤 Requesting List for Item: " .. uuid .. " at $" .. price)
+
+    -- Visual Feedback
+    local listBtn = self.MainUI.InventoryFrame:FindFirstChild("ListButton")
+    local originalText = listBtn and listBtn.Text or "LIST"
+    if listBtn then listBtn.Text = "..." end
     
     local remotes = ReplicatedStorage:WaitForChild("Remotes")
     local postFunc = remotes:WaitForChild(GameConstants.Events.POST_LISTING)
     
-    local success, result = pcall(function()
+    local success, resultBool, resultMsg = pcall(function()
         return postFunc:InvokeServer(uuid, price)
     end)
     
-    if success and result.Success then
+    self.IsProcessing = false
+    if listBtn then listBtn.Text = originalText end
+    
+    if success and resultBool then
         print("✅ Item Listed!")
-        -- Clear input and selection
-        local input = self.MainUI.InventoryFrame.PriceInput
-        input.Text = ""
+        if self.MainUI.InventoryFrame:FindFirstChild("PriceInput") then
+            self.MainUI.InventoryFrame.PriceInput.Text = ""
+        end
         
-        -- Deselect item in inventory controller (Hack: simulate click or manual reset)
-        InventoryController.SelectedUUID = nil 
-        InventoryController:UpdateDisplay()
+        -- Force Deselect
+        if InventoryController.SelectedUUID == uuid then
+            InventoryController.SelectedUUID = nil
+            InventoryController:UpdateDisplay()
+        end
     else
-        warn("Listing Failed: " .. tostring(result.Msg))
+        warn("Listing Failed: " .. tostring(resultMsg))
     end
 end
 
--- Helper (Duplicated from InventoryController for visual consistency)
 function MarketController:GetRarityColor(element)
-    if element == "Gold" then return Color3.fromRGB(255, 215, 0) end
-    if element == "Void" then return Color3.fromRGB(80, 0, 150) end
-    if element == "Glitch" then return Color3.fromRGB(255, 0, 0) end
-    return Color3.fromRGB(100, 100, 100)
+    if element == "Gold" then return Color3.fromRGB(255, 215, 0)
+    elseif element == "Void" then return Color3.fromRGB(80, 0, 150)
+    elseif element == "Glitch" then return Color3.fromRGB(255, 0, 0)
+    else return Color3.fromRGB(200, 200, 200) end
 end
 
 return MarketController

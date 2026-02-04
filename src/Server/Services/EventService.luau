@@ -4,33 +4,35 @@ local Players = game:GetService("Players")
 local GameConstants = require(ReplicatedStorage.Configs.GameConstants)
 
 local EventService = {}
-EventService.CurrentBuff = nil -- Stores the active buff table
+EventService.CurrentBuff = nil -- Stores the active buff data
+EventService.NextEventTime = 0
 
 function EventService:Init()
-    local remotesFolder = ReplicatedStorage:WaitForChild("Remotes")
+    local remotes = ReplicatedStorage:WaitForChild("Remotes")
     
-    local eventRemote = remotesFolder:FindFirstChild(GameConstants.Events.MARKET_EVENT)
-    if not eventRemote then
-        eventRemote = Instance.new("RemoteEvent")
-        eventRemote.Name = GameConstants.Events.MARKET_EVENT
-        eventRemote.Parent = remotesFolder
+    -- Event to notify clients of market changes (for UI effects)
+    local marketEvent = remotes:FindFirstChild(GameConstants.Events.MARKET_EVENT)
+    if not marketEvent then
+        marketEvent = Instance.new("RemoteEvent")
+        marketEvent.Name = GameConstants.Events.MARKET_EVENT
+        marketEvent.Parent = remotes
     end
 end
 
 function EventService:Start()
     print("   -> EventService Started")
     
-    -- Event Loop
+    -- Start the Event Loop
     task.spawn(function()
         while true do
-            -- 1. Wait for next event
-            task.wait(GameConstants.EVENT_INTERVAL)
+            -- 1. Wait for interval
+            task.wait(GameConstants.INJECTION_INTERVAL or 1200) -- Default 20 mins
             
             -- 2. Trigger Event
             self:TriggerRandomEvent()
             
             -- 3. Wait for duration
-            task.wait(GameConstants.EVENT_DURATION)
+            task.wait(GameConstants.EVENT_DURATION or 300) -- Default 5 mins
             
             -- 4. End Event
             self:EndEvent()
@@ -40,43 +42,36 @@ end
 
 function EventService:TriggerRandomEvent()
     local buffs = GameConstants.Buffs
+    if not buffs or #buffs == 0 then return end
+    
     -- Pick random buff
-    local randomBuff = buffs[math.random(1, #buffs)]
+    local selectedBuff = buffs[math.random(1, #buffs)]
+    self.CurrentBuff = selectedBuff
     
-    self.CurrentBuff = randomBuff
+    print("🚨 MARKET EVENT: " .. selectedBuff.Message)
     
-    print("🚨 MARKET EVENT: " .. randomBuff.Message)
-    
-    -- Notify all clients (for UI)
-    local remote = ReplicatedStorage.Remotes:FindFirstChild(GameConstants.Events.MARKET_EVENT)
-    if remote then
-        remote:FireAllClients({ Active = true, Buff = randomBuff })
-    end
+    -- Notify all clients (Pop up UI)
+    ReplicatedStorage.Remotes[GameConstants.Events.MARKET_EVENT]:FireAllClients("Start", selectedBuff)
 end
 
 function EventService:EndEvent()
-    self.CurrentBuff = nil
-    print("🚨 MARKET EVENT ENDED")
-    
-    local remote = ReplicatedStorage.Remotes:FindFirstChild(GameConstants.Events.MARKET_EVENT)
-    if remote then
-        remote:FireAllClients({ Active = false })
+    if self.CurrentBuff then
+        print("✅ MARKET EVENT ENDED")
+        self.CurrentBuff = nil
+        ReplicatedStorage.Remotes[GameConstants.Events.MARKET_EVENT]:FireAllClients("End", nil)
     end
 end
 
--- API for TycoonService to check buffs
+-- Called by TycoonService to calculate income
 function EventService:GetMultiplier(itemData)
     if not self.CurrentBuff then return 1 end
     
     local buff = self.CurrentBuff
     
-    -- Check Element Buff (e.g., Gold x5)
+    -- Check if item matches buff criteria
     if buff.Type == "Element" and itemData.Element == buff.Target then
         return buff.Multiplier
-    end
-    
-    -- Check Model Buff (e.g., Grimace x10)
-    if buff.Type == "Model" and itemData.Model == buff.Target then
+    elseif buff.Type == "Model" and itemData.Model == buff.Target then
         return buff.Multiplier
     end
     

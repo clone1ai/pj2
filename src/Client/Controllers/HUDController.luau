@@ -1,63 +1,71 @@
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
 local HUDController = {}
 
 function HUDController:Init()
     local player = Players.LocalPlayer
-    local gui = player:WaitForChild("PlayerGui")
-    self.MainUI = gui:WaitForChild("MainUI", 10)
+    self.PlayerGui = player:WaitForChild("PlayerGui")
 end
 
 function HUDController:Start()
+    local mainUI = self.PlayerGui:WaitForChild("MainUI")
+    
+    -- 1. Hook up Currency
     local player = Players.LocalPlayer
-    local currentCoins = player:GetAttribute("RizzCoins")
-    if currentCoins == nil then
-        -- Fallback: fetch from server
-        local ReplicatedStorage = game:GetService("ReplicatedStorage")
-        local remotes = ReplicatedStorage:WaitForChild("Remotes")
-        local getBalanceFunc = remotes:FindFirstChild("GetRizzCoinBalance")
-        if getBalanceFunc then
-            local ok, result = pcall(function()
-                return getBalanceFunc:InvokeServer()
-            end)
-            if ok and result then
-                currentCoins = result
-            else
-                currentCoins = 0
+    player:GetAttributeChangedSignal("RizzCoins"):Connect(function()
+        self:UpdateCurrency(mainUI, player:GetAttribute("RizzCoins"))
+    end)
+    self:UpdateCurrency(mainUI, player:GetAttribute("RizzCoins") or 0)
+
+    -- 2. Hook up Menu Buttons (Inventory/Market toggles)
+    local menuFrame = mainUI:WaitForChild("MenuFrame")
+    
+    -- Inventory Toggle
+    local invBtn = menuFrame:FindFirstChild("InventoryButton")
+    if invBtn then
+        invBtn.MouseButton1Click:Connect(function()
+            self:ToggleFrame("InventoryFrame")
+        end)
+    end
+
+    -- Market Toggle
+    local mktBtn = menuFrame:FindFirstChild("MarketButton")
+    if mktBtn then
+        mktBtn.MouseButton1Click:Connect(function()
+            self:ToggleFrame("MarketFrame")
+        end)
+    end
+    
+    -- 3. Close Buttons logic
+    for _, frameName in pairs({"InventoryFrame", "MarketFrame"}) do
+        local frame = mainUI:FindFirstChild(frameName)
+        if frame then
+            local close = frame:FindFirstChild("CloseButton")
+            if close then
+                close.MouseButton1Click:Connect(function() frame.Visible = false end)
             end
-        else
-            currentCoins = 0
         end
     end
-    self:UpdateMoney(currentCoins)
-
-    -- 2. Listen for fast updates (Tycoon ticks)
-    player:GetAttributeChangedSignal("RizzCoins"):Connect(function()
-        local newValue = player:GetAttribute("RizzCoins")
-        self:UpdateMoney(newValue)
-    end)
-
+    
+    -- NOTE: "Buy Box" logic is now handled exclusively by InventoryController
+    
     print("   -> HUDController Started")
 end
 
-function HUDController:UpdateMoney(amount)
-    if not self.MainUI then return end
-    local label = self.MainUI:FindFirstChild("AmountLabel", true) -- Recursive find
-    
-    if label then
-        -- Format with commas (e.g., 1,000,000)
-        label.Text = "$" .. self:FormatNumber(amount)
-        
-        -- Simple "Pop" animation
-        local tweenInfo = TweenInfo.new(0.1, Enum.EasingStyle.Sine, Enum.EasingDirection.Out, 0, true)
-        TweenService:Create(label, tweenInfo, {TextSize = 32}):Play()
+function HUDController:ToggleFrame(frameName)
+    local frame = self.PlayerGui.MainUI:FindFirstChild(frameName)
+    if frame then
+        frame.Visible = not frame.Visible
     end
 end
 
--- Helper: Adds commas to numbers
-function HUDController:FormatNumber(n)
-    return tostring(n):reverse():gsub("%d%d%d", "%1,"):reverse():gsub("^,", "")
+function HUDController:UpdateCurrency(ui, amount)
+    local label = ui:FindFirstChild("CurrencyLabel")
+    if label then
+        label.Text = "💰 $" .. tostring(amount)
+    end
 end
 
 return HUDController

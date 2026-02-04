@@ -1,42 +1,35 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
+local Players = game:GetService("Players")
 
 local DataService = require(script.Parent.DataService)
--- Ensure this path matches your Argon structure (usually ServerScriptService.Classes)
-local BrainrotItem = require(script.Parent.Parent.Classes.BrainrotItem) 
+-- Lazy load TycoonService inside functions to prevent circular dependency
+local BrainrotItem = require(script.Parent.Parent.Classes.BrainrotItem)
 local GameConstants = require(ReplicatedStorage.Configs.GameConstants)
 
 local InventoryService = {}
 
 function InventoryService:Init()
-    local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes")
-    if not remotesFolder then
-        remotesFolder = Instance.new("Folder")
-        remotesFolder.Name = "Remotes"
-        remotesFolder.Parent = ReplicatedStorage
-    end
-
-    local mintFunc = remotesFolder:FindFirstChild(GameConstants.Events.REQUEST_MINT)
-    if not mintFunc then
-        mintFunc = Instance.new("RemoteFunction")
-        mintFunc.Name = GameConstants.Events.REQUEST_MINT
-        mintFunc.Parent = remotesFolder
-    end
-
-    local getBalanceFunc = remotesFolder:FindFirstChild(GameConstants.Events.GET_RIZZ_COIN_BALANCE)
-    if not getBalanceFunc then
-        getBalanceFunc = Instance.new("RemoteFunction")
-        getBalanceFunc.Name = GameConstants.Events.GET_RIZZ_COIN_BALANCE
-        getBalanceFunc.Parent = remotesFolder
-    end
-
-    mintFunc.OnServerInvoke = function(player)
-        return self:MintItem(player)
-    end
+    local remotes = ReplicatedStorage:WaitForChild("Remotes")
     
-    getBalanceFunc.OnServerInvoke = function(player)
-        local profile = DataService:GetProfile(player)
-        return profile and profile.Data.RizzCoins or 0
+    local function createRemote(name, isFunction)
+        if not remotes:FindFirstChild(name) then
+            local r = isFunction and Instance.new("RemoteFunction") or Instance.new("RemoteEvent")
+            r.Name = name
+            r.Parent = remotes
+        end
+    end
+
+    createRemote(GameConstants.Events.QUICK_SELL, false) -- Event
+    createRemote(GameConstants.Events.REQUEST_MINT, true) -- Function [CHANGED TO FUNCTION]
+
+    -- Bind Listeners
+    remotes[GameConstants.Events.QUICK_SELL].OnServerEvent:Connect(function(p, uuid) 
+        self:OnQuickSell(p, uuid) 
+    end)
+    
+    -- Bind Invoke for Minting (Must return data)
+    remotes[GameConstants.Events.REQUEST_MINT].OnServerInvoke = function(p) 
+        return self:OnMintRequest(p) 
     end
 end
 
@@ -44,41 +37,72 @@ function InventoryService:Start()
     print("   -> InventoryService Started")
 end
 
-function InventoryService:MintItem(player)
-    -- [FIX] Use Constant instead of hardcoded number
-    local boxCost = GameConstants.BOX_COST 
+-- [[ BUY BOX / MINTING LOGIC ]] --
+function InventoryService:OnMintRequest(player)
+    local profile = DataService:GetProfile(player)
+    if not profile then return { Success = false, Message = "No Profile" } end
+    
+    -- 1. Check Funds
+    if profile.Data.RizzCoins < GameConstants.BOX_COST then
+        return { Success = false, Message = "Insufficient Funds" }
+    end
+    
+    -- 2. Deduct Cost
+    profile.Data.RizzCoins -= GameConstants.BOX_COST
+    
+    -- 3. Generate Item
+    local newItemObject = BrainrotItem.new() 
+    table.insert(profile.Data.Inventory, newItemObject.Data)
+    
+    -- 4. Sync Data
+    player:SetAttribute("RizzCoins", profile.Data.RizzCoins)
+    DataService:SyncClient(player)
+    
+    print("✅ MINT: " .. player.Name .. " got " .. newItemObject.Data.Model .. " [" .. newItemObject.Data.UUID .. "]")
+    
+    -- 5. RETURN SUCCESS DATA (Fixed Missing Return)
+    return {
+        Success = true,
+        Item = newItemObject.Data
+    }
+end
+
+-- [[ QUICK SELL LOGIC ]] --
+function InventoryService:OnQuickSell(player, itemUUID)
+    local TycoonService = require(script.Parent.TycoonService) -- Lazy Load
     
     local profile = DataService:GetProfile(player)
-    if not profile then 
-        warn("[InventoryService] No profile found for " .. player.Name)
-        return { Success = false, Message = "Data not loaded" } 
+    if not profile then return end
+
+    local inventory = profile.Data.Inventory
+    local itemIndex, itemData = self:FindItem(inventory, itemUUID)
+
+    if not itemData then return end
+    
+    -- Prevent selling placed items
+    if TycoonService:IsItemPlaced(player, itemUUID) then 
+        warn("Cannot sell placed item")
+        return 
     end
 
-    if profile.Data.RizzCoins >= boxCost then
-        profile.Data.RizzCoins -= boxCost
+    table.remove(inventory, itemIndex)
+    
+    local sellValue = math.floor(itemData.FloorPrice * GameConstants.QUICK_SELL_PERCENT)
+    profile.Data.RizzCoins += sellValue
+    
+    player:SetAttribute("RizzCoins", profile.Data.RizzCoins)
+    DataService:SyncClient(player)
+    
+    return { Success = true, SoldAmount = sellValue }
+end
 
-        if player and player.SetAttribute then
-            player:SetAttribute("RizzCoins", profile.Data.RizzCoins)
-        end
-
-        local newItemObject = BrainrotItem.new() 
-        local itemData = newItemObject.Data
-
-        table.insert(profile.Data.Inventory, itemData)
-
-        -- Sync client
-        DataService:SyncClient(player)
-
-        print(string.format("📦 %s Minted: %s | Floor: $%s", player.Name, itemData.Model, itemData.FloorPrice))
-
-        return { 
-            Success = true, 
-            Item = itemData,
-            NewBalance = profile.Data.RizzCoins
-        }
-    else
-        return { Success = false, Message = "Not enough Funds" }
+-- Helper
+function InventoryService:FindItem(inventory, uuid)
+    local target = tostring(uuid)
+    for i, item in ipairs(inventory) do
+        if tostring(item.UUID) == target then return i, item end
     end
+    return nil, nil
 end
 
 return InventoryService
