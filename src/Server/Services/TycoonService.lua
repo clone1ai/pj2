@@ -31,13 +31,13 @@ function TycoonService:Init()
         self:PlaceItem(player, itemUUID, shelfIndex)
     end)
 
-    -- Create RemoveItem Event (Client -> Server)
-    local removeEvent = remotesFolder:FindFirstChild("RemoveItemFromShelf")
-    if not removeEvent then
-        removeEvent = Instance.new("RemoteEvent")
-        removeEvent.Name = "RemoveItemFromShelf"
-        removeEvent.Parent = remotesFolder
-    end
+	-- Create RemoveItem Event (Client -> Server)
+	local removeEvent = remotesFolder:FindFirstChild(GameConstants.Events.REMOVE_FROM_SHELF)
+	if not removeEvent then
+		removeEvent = Instance.new("RemoteEvent")
+		removeEvent.Name = GameConstants.Events.REMOVE_FROM_SHELF
+		removeEvent.Parent = remotesFolder
+	end
     removeEvent.OnServerEvent:Connect(function(player, shelfIndex)
         self:RemoveItemFromShelf(player, shelfIndex)
     end)

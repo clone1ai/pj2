@@ -11,7 +11,8 @@ local GameConstants = {
         PLACE_ITEM = "PlaceItem",
         QUICK_SELL = "QuickSell",
         SYNC_DATA = "SyncData",
-        MARKET_EVENT = "MarketEvent",
+		MARKET_EVENT = "MarketEvent",
+		REMOVE_FROM_SHELF = "RemoveItemFromShelf",
         
         -- [NEW] Marketplace Events
         POST_LISTING = "PostListing", -- Player -> Server (List Item)
