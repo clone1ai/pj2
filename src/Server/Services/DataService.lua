@@ -1,87 +1,72 @@
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- Dependencies
-local ProfileService = require(ReplicatedStorage.Utils.ProfileService)
-local GameConstants = require(ReplicatedStorage.Configs.GameConstants)
+-- SAFETY: Wait for Packages to load
+local Packages = ReplicatedStorage:WaitForChild("Packages", 30)
+if not Packages then error("Packages folder missing in ReplicatedStorage!") end
+
+local ProfileService = require(Packages:WaitForChild("ProfileService"))
 
 local DataService = {}
-DataService.Profiles = {}
 
--- [[ 1. THE DATA TEMPLATE ]] --
+-- Default Data Structure
 local ProfileTemplate = {
-    RizzCoins = 1000,
-    TotalEarned = 0, -- << FIX: This was missing before!
-    Inventory = {},
-    ShelfLayout = {}
+    RizzCoins = 1000, -- Free starter money for testing
+    Inventory = {},   
+    Farm = {},        
 }
 
--- [[ 2. DATA STORE KEY ]] --
--- I changed this to "02". This will WIPE your current data so you get the new Template.
-local ProfileStore = ProfileService.GetProfileStore("Brainrot_Dev_02", ProfileTemplate)
+-- Store Key (Change "Dev_01" to wipe data)
+local ProfileStore = ProfileService.GetProfileStore("PlayerData_Dev_01", ProfileTemplate)
+local Profiles = {}
 
-function DataService:Init()
-    -- Create Remotes Folder if missing
-    if not ReplicatedStorage:FindFirstChild("Remotes") then
-        local folder = Instance.new("Folder")
-        folder.Name = "Remotes"
-        folder.Parent = ReplicatedStorage
-    end
-    
-    -- Create Sync Event
-    local syncEvent = ReplicatedStorage.Remotes:FindFirstChild(GameConstants.Events.SYNC_DATA)
-    if not syncEvent then
-        syncEvent = Instance.new("RemoteEvent")
-        syncEvent.Name = GameConstants.Events.SYNC_DATA
-        syncEvent.Parent = ReplicatedStorage.Remotes
-    end
-end
+function DataService.Start()
+    print("[DataService] Started")
 
-function DataService:Start()
     Players.PlayerAdded:Connect(function(player)
         local profile = ProfileStore:LoadProfileAsync("Player_" .. player.UserId)
-        if profile then
+        
+        if profile ~= nil then
             profile:AddUserId(player.UserId)
-            profile:Reconcile() -- Fills in missing values from Template
-
+            profile:Reconcile()
+            
             profile:ListenToRelease(function()
-                self.Profiles[player] = nil
-                player:Kick()
+                Profiles[player] = nil
+                player:Kick("Data loaded elsewhere.")
             end)
-
+            
             if player:IsDescendantOf(Players) then
-                self.Profiles[player] = profile
-                print("      [Data] Loaded profile for " .. player.Name)
-
-                -- Set RizzCoins attribute for HUD
-                if player and player.SetAttribute then
-                    player:SetAttribute("RizzCoins", profile.Data.RizzCoins or 0)
-                end
-
-                -- Sync immediately on load
-                self:SyncClient(player)
+                Profiles[player] = profile
+                print(player.Name .. " data loaded. Coins: " .. profile.Data.RizzCoins)
             else
                 profile:Release()
             end
         else
-            player:Kick("Could not load data")
+            player:Kick("Data unavailable.")
         end
     end)
-    
+
     Players.PlayerRemoving:Connect(function(player)
-        local profile = self.Profiles[player]
+        local profile = Profiles[player]
         if profile then profile:Release() end
     end)
 end
 
-function DataService:GetProfile(player)
-    return self.Profiles[player]
+function DataService.GetProfile(player)
+    return Profiles[player]
 end
 
-function DataService:SyncClient(player)
-    local profile = self:GetProfile(player)
+function DataService.AdjustCurrency(player, amount)
+    local profile = Profiles[player]
     if profile then
-        ReplicatedStorage.Remotes[GameConstants.Events.SYNC_DATA]:FireClient(player, profile.Data)
+        profile.Data.RizzCoins += amount
+    end
+end
+
+function DataService.AddItem(player, itemData)
+    local profile = Profiles[player]
+    if profile then
+        table.insert(profile.Data.Inventory, itemData)
     end
 end
 
