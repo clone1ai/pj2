@@ -26,7 +26,10 @@ end
 -- 2. "QuickSell"
 -- 3. "ListOnMarket"
 -- 4. "GetInventoryData"
--- "PlaceItem" (Function)
--- "PickupItem" (Function)
--- "GetFarmData" (Function)
+--5 "PlaceItem" (Function)
+--6 "PickupItem" (Function)
+--7 "GetFarmData" (Function)
+--8 "GetMarketData" (Function)
+--9 "BuyItem" (Function)
+--10 "RemoveListing" (Function)
 return Remotes
