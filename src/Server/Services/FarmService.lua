@@ -7,6 +7,7 @@ local CollectionService = game:GetService("CollectionService")
 local NetFolder = ReplicatedStorage:WaitForChild("Net")
 local Remotes = require(NetFolder:WaitForChild("Remotes"))
 local DataService = require(script.Parent:WaitForChild("DataService"))
+local SynergyService = require(script.Parent:WaitForChild("SynergyService")) -- [NEW]
 
 local Assets = ReplicatedStorage:WaitForChild("Assets")
 local BrainsFolder = Assets:WaitForChild("Brains")
@@ -329,25 +330,59 @@ function FarmService.InjectAI(carrier, boundsPart)
 end
 
 function FarmService.DistributeIncome()
+    -- Get Active Event Info
+    local buff = SynergyService.GetCurrentBuffs()
+    
     for player, farm in pairs(PlayerFarms) do
         local profile = DataService.GetProfile(player)
-        
-        -- Default to 0 if loading
-        local totalIncome = 0
-        
         if profile and profile.Data then
-            for _, item in ipairs(profile.Data.Farm) do
-                totalIncome += math.floor(item.FloorPrice * INCOME_RATE)
+            local totalIncome = 0
+            local inventory = profile.Data.Farm
+            
+            -- CHECK COMBO REQUIREMENTS (Pre-scan)
+            local hasComboModel = false
+            local hasComboElem = false
+            
+            if buff and buff.Type == "Combo" then
+                for _, item in ipairs(inventory) do
+                    if item.Model == buff.Target1 then hasComboModel = true end
+                    if item.Element == buff.Target2 then hasComboElem = true end
+                end
+            end
+            
+            local isComboActive = (hasComboModel and hasComboElem)
+            
+            -- CALCULATE INCOME PER ITEM
+            for _, item in ipairs(inventory) do
+                local baseIncome = math.floor(item.FloorPrice * INCOME_RATE)
+                local finalIncome = baseIncome
+                
+                if buff then
+                    if buff.Type == "Single" then
+                        -- Single Element Check
+                        if item.Element == buff.Target1 then
+                            finalIncome = baseIncome * buff.Multiplier
+                        end
+                        
+                    elseif buff.Type == "Combo" and isComboActive then
+                        -- Combo Check: Apply only to items contributing to the synergy
+                        -- (Rules said: "both generate x20". We apply to the matching types.)
+                        if item.Model == buff.Target1 or item.Element == buff.Target2 then
+                            finalIncome = baseIncome * buff.Multiplier
+                        end
+                    end
+                end
+                
+                totalIncome += finalIncome
             end
             
             if totalIncome > 0 then
                 DataService.AdjustCurrency(player, totalIncome)
             end
+            
+            -- Sync Rate to Client (for HUD)
+            player:SetAttribute("IncomeRate", totalIncome)
         end
-        
-        -- [NEW] Broadcast Income Rate to Client via Attribute
-        -- This is extremely efficient (Replicates automatically)
-        player:SetAttribute("IncomeRate", totalIncome)
     end
 end
 

@@ -1,22 +1,17 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
+local InventoryController = {}
 
 -- PATHS
 local NetFolder = ReplicatedStorage:WaitForChild("Net")
 local Remotes = require(NetFolder:WaitForChild("Remotes"))
-
-local Assets = ReplicatedStorage:WaitForChild("Assets")
-local BrainsFolder = Assets:WaitForChild("Brains")
-
 local UI = script.Parent.Parent:WaitForChild("UI")
 local InventoryUI = require(UI:WaitForChild("InventoryUI"))
 
-local InventoryController = {}
+local Assets = ReplicatedStorage:WaitForChild("Assets"):WaitForChild("Brains")
 
 -- State
 local Items = {} 
 local SelectedItem = nil
-local RotationConnection = nil 
 
 -- Remotes
 local EquipRF = Remotes.GetRemoteFunction("EquipItem")
@@ -24,167 +19,219 @@ local QuickSellRF = Remotes.GetRemoteFunction("QuickSell")
 local ListMarketRF = Remotes.GetRemoteFunction("ListOnMarket")
 local GetInvRF = Remotes.GetRemoteFunction("GetInventoryData")
 
--- Helper: Render 3D Preview
-local function UpdatePreview(viewport, itemName, modelName)
-    viewport:ClearAllChildren()
-    if RotationConnection then 
-        RotationConnection:Disconnect() 
-        RotationConnection = nil
-    end
-    
-    local modelAsset = BrainsFolder:FindFirstChild(itemName) or BrainsFolder:FindFirstChild(modelName)
-    if not modelAsset then return end 
-    
-    local clone = modelAsset:Clone()
-    clone.Parent = viewport
-    
-    local cam = Instance.new("Camera")
-    viewport.CurrentCamera = cam
-    cam.Parent = viewport
-    
-    local cf, size = clone:GetBoundingBox()
-    local maxDim = math.max(size.X, size.Y, size.Z)
-    local distance = maxDim * 2.5 
-    
-    local angle = 0
-    RotationConnection = RunService.RenderStepped:Connect(function(dt)
-        angle = angle + dt 
-        local rotCFrame = CFrame.Angles(0, angle, 0)
-        cam.CFrame = CFrame.new(cf.Position + (rotCFrame.LookVector * distance) + Vector3.new(0, size.Y/2, 0), cf.Position)
-    end)
-end
-
 function InventoryController.Start()
     print("[InventoryController] Started")
     local uiRef = InventoryUI.Create()
     
-    -- [CRITICAL FIX] Initial Data Load with Retry
-    uiRef.Buttons.Toggle.Text = "LOAD..." -- Visual indicator
+    -- Helper: Reset Right Panel
+    local function ClearSelection()
+        SelectedItem = nil
+        uiRef.Details.Name.Text = "Select an Item"
+        uiRef.Details.Price.Text = "Value: ---"
+        uiRef.Details.UID.Text = "UID: ---"
+        uiRef.Details.Element.Text = "Element: ---"
+        uiRef.Details.Model.Text = "Model: ---"
+        uiRef.Details.Size.Text = "Size: ---"
+        
+        -- Reset Buttons
+        uiRef.Details.Buttons.Equip.Text = "HOLD ITEM"
+        uiRef.Details.Buttons.Equip.BackgroundColor3 = Color3.fromRGB(52, 152, 219)
+        uiRef.Details.Buttons.Sell.Text = "QUICK SELL"
+        uiRef.Details.Buttons.List.Text = "LIST ON MARKET"
+    end
+
+    -- 1. Initial Load
     task.spawn(function()
+        uiRef.Toggle.Text = "LOADING..."
         InventoryController.RefreshInventory(uiRef)
-        uiRef.Buttons.Toggle.Text = "BAG" -- Reset text when done
+        uiRef.Toggle.Text = "BAG"
     end)
     
-    -- TOGGLE VISIBILITY LOGIC
-    uiRef.Buttons.Toggle.MouseButton1Click:Connect(function()
-        uiRef.MainFrame.Visible = not uiRef.MainFrame.Visible
-        if uiRef.MainFrame.Visible then
+    -- 2. Toggle UI
+    uiRef.Toggle.MouseButton1Click:Connect(function()
+        uiRef.Frame.Visible = not uiRef.Frame.Visible
+        if uiRef.Frame.Visible then
             InventoryController.RefreshInventory(uiRef) 
+            ClearSelection()
         end
     end)
 
-    -- CLOSE BUTTON LOGIC
-    uiRef.Buttons.Close.MouseButton1Click:Connect(function()
-        uiRef.MainFrame.Visible = false
+    -- 3. Close UI
+    uiRef.Close.MouseButton1Click:Connect(function()
+        uiRef.Frame.Visible = false
     end)
     
-    -- 1. ACTION: EQUIP / HOLD
-    uiRef.Buttons.Equip.MouseButton1Click:Connect(function()
+    -- 4. ACTION: EQUIP
+    uiRef.Details.Buttons.Equip.MouseButton1Click:Connect(function()
         if not SelectedItem then return end
         
         local status = EquipRF:InvokeServer(SelectedItem.Id)
         
         if status == "Equipped" then
-            uiRef.Buttons.Equip.Text = "UNHOLD"
-            uiRef.Buttons.Equip.BackgroundColor3 = Color3.fromRGB(230, 126, 34) 
+            uiRef.Details.Buttons.Equip.Text = "UNEQUIP"
+            uiRef.Details.Buttons.Equip.BackgroundColor3 = Color3.fromRGB(230, 126, 34) -- Orange
         else
-            uiRef.Buttons.Equip.Text = "HOLD"
-            uiRef.Buttons.Equip.BackgroundColor3 = Color3.fromRGB(52, 152, 219) 
+            uiRef.Details.Buttons.Equip.Text = "HOLD ITEM"
+            uiRef.Details.Buttons.Equip.BackgroundColor3 = Color3.fromRGB(52, 152, 219) -- Blue
         end
     end)
     
-    -- 2. ACTION: QUICK SELL
-    uiRef.Buttons.QuickSell.MouseButton1Click:Connect(function()
+    -- 5. ACTION: SELL
+    uiRef.Details.Buttons.Sell.MouseButton1Click:Connect(function()
         if not SelectedItem then return end
         local result = QuickSellRF:InvokeServer(SelectedItem.Id)
         if result.Success then
             print("Sold for $" .. result.Cash)
             InventoryController.RefreshInventory(uiRef)
-            
-            uiRef.Labels.Name.Text = "Select Item"
-            uiRef.Labels.Price.Text = ""
-            uiRef.Viewport:ClearAllChildren()
-            SelectedItem = nil
+            ClearSelection()
         end
     end)
 
-    -- 3. ACTION: MARKET POPUP
-    uiRef.Buttons.Market.MouseButton1Click:Connect(function()
+    -- 6. ACTION: MARKET POPUP
+    uiRef.Details.Buttons.List.MouseButton1Click:Connect(function()
         if not SelectedItem then return end
-        uiRef.Popup.Visible = true
-        uiRef.Input.Text = tostring(SelectedItem.FloorPrice) 
+        uiRef.Popup.Frame.Visible = true
+        uiRef.Popup.Input.Text = tostring(SelectedItem.FloorPrice) 
     end)
     
-    uiRef.ClosePopup.MouseButton1Click:Connect(function()
-        uiRef.Popup.Visible = false
+    uiRef.Popup.Close.MouseButton1Click:Connect(function()
+        uiRef.Popup.Frame.Visible = false
     end)
 
-    -- 4. ACTION: CONFIRM LISTING
-    uiRef.Buttons.ConfirmList.MouseButton1Click:Connect(function()
+    -- 7. ACTION: CONFIRM LISTING
+    uiRef.Popup.Confirm.MouseButton1Click:Connect(function()
         if not SelectedItem then return end
-        local price = tonumber(uiRef.Input.Text)
+        local price = tonumber(uiRef.Popup.Input.Text)
         if not price then return end
         
+        uiRef.Popup.Confirm.Text = "LISTING..."
         local result = ListMarketRF:InvokeServer(SelectedItem.Id, price)
+        
         if result.Success then
             print("Item Listed!")
-            uiRef.Popup.Visible = false
+            uiRef.Popup.Frame.Visible = false
             InventoryController.RefreshInventory(uiRef)
-            SelectedItem = nil
+            ClearSelection()
         else
             warn(result.Msg)
+            uiRef.Popup.Confirm.Text = "FAILED"
+            task.wait(1)
         end
+        uiRef.Popup.Confirm.Text = "CONFIRM"
     end)
 end
 
 function InventoryController.RefreshInventory(uiRef)
-    local data = nil
-    
-    -- [CRITICAL FIX] Retry Loop: Wait until server sends data
-    -- If data is nil, it means ProfileService is still loading
-    while data == nil do
-        data = GetInvRF:InvokeServer()
-        if data == nil then
-            -- Wait 1 second before trying again
-            task.wait(1)
-        end
+    local data = GetInvRF:InvokeServer()
+    if data then
+        Items = data
+        InventoryController.RenderGrid(uiRef)
     end
-    
-    Items = data
-    InventoryController.RenderGrid(uiRef)
 end
 
 function InventoryController.RenderGrid(uiRef)
+    -- Clear Grid
     for _, child in pairs(uiRef.Grid:GetChildren()) do
-        if child:IsA("TextButton") then child:Destroy() end
+        if child:IsA("Frame") or child:IsA("TextButton") then child:Destroy() end
     end
     
     table.sort(Items, function(a, b) return a.Created > b.Created end)
     
     for _, item in ipairs(Items) do
-        local btn = Instance.new("TextButton")
-        btn.Parent = uiRef.Grid
-        btn.Text = item.Name .. "\n$" .. item.FloorPrice
-        btn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-        btn.TextColor3 = Color3.new(1,1,1)
-        btn.Font = Enum.Font.Gotham
-        btn.TextSize = 12
+        -- 1. Create Card Container
+        local card = Instance.new("TextButton")
+        card.Text = ""
+        card.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        card.ZIndex = 10 
+        card.Parent = uiRef.Grid
         
-        if item.Element == "Gold" then btn.BackgroundColor3 = Color3.fromRGB(241, 196, 15) end
-        if item.Element == "Void" then btn.BackgroundColor3 = Color3.fromRGB(142, 68, 173) end
-        if item.Element == "Glitch" then btn.BackgroundColor3 = Color3.fromRGB(46, 204, 113) end
+        Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = Color3.fromRGB(70, 70, 70)
+        stroke.Thickness = 1
+        stroke.Parent = card
+        
+        -- 2. VIEWPORT FRAME (3D Model)
+        local viewport = Instance.new("ViewportFrame")
+        viewport.Size = UDim2.new(1, 0, 0.7, 0)
+        viewport.Position = UDim2.new(0, 0, 0, 10)
+        viewport.BackgroundTransparency = 1
+        viewport.LightColor = Color3.fromRGB(255, 255, 255)
+        viewport.Ambient = Color3.fromRGB(150, 150, 150)
+        viewport.ZIndex = 11
+        viewport.Parent = card
+        
+        -- Clone Asset
+        local originalModel = Assets:FindFirstChild(item.Model)
+        if originalModel then
+            local clone = originalModel:Clone()
+            clone.Parent = viewport
+            
+            -- Camera Setup
+            local cam = Instance.new("Camera")
+            viewport.CurrentCamera = cam
+            cam.Parent = viewport
+            
+            local cf, size = clone:GetBoundingBox()
+            local maxDim = math.max(size.X, size.Y, size.Z)
+            local dist = maxDim * 1.5
+            cam.CFrame = CFrame.new(cf.Position + Vector3.new(dist, dist*0.5, dist), cf.Position)
+        end
+        
+        -- 3. Item Name Overlay
+        local nameLbl = Instance.new("TextLabel")
+        nameLbl.Text = item.Name
+        nameLbl.Size = UDim2.new(1, -10, 0, 20)
+        nameLbl.Position = UDim2.new(0, 5, 0, 5)
+        nameLbl.BackgroundTransparency = 1
+        nameLbl.TextColor3 = Color3.new(1,1,1)
+        nameLbl.Font = Enum.Font.GothamBold
+        nameLbl.TextSize = 11
+        nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+        nameLbl.ZIndex = 12
+        nameLbl.Parent = card
+        
+        -- 4. Price/Element Pill
+        local pill = Instance.new("Frame")
+        pill.Size = UDim2.new(0.9, 0, 0, 30)
+        pill.Position = UDim2.new(0.05, 0, 0.8, -5)
+        pill.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+        pill.ZIndex = 11
+        pill.Parent = card
+        Instance.new("UICorner", pill).CornerRadius = UDim.new(0, 6)
+        
+        local infoLbl = Instance.new("TextLabel")
+        infoLbl.Text = item.Element
+        infoLbl.Size = UDim2.new(1, 0, 1, 0)
+        infoLbl.BackgroundTransparency = 1
+        infoLbl.TextColor3 = Color3.fromRGB(200, 200, 200)
+        
+        -- Element Colors
+        if item.Element == "Gold" then infoLbl.TextColor3 = Color3.fromRGB(241, 196, 15) end
+        if item.Element == "Void" then infoLbl.TextColor3 = Color3.fromRGB(142, 68, 173) end
+        if item.Element == "Glitch" then infoLbl.TextColor3 = Color3.fromRGB(46, 204, 113) end
+        
+        infoLbl.Font = Enum.Font.GothamBold
+        infoLbl.TextSize = 14
+        infoLbl.ZIndex = 12
+        infoLbl.Parent = pill
 
-        btn.MouseButton1Click:Connect(function()
+        -- 5. Selection Logic
+        card.MouseButton1Click:Connect(function()
             SelectedItem = item
-            uiRef.Labels.Name.Text = item.Name
-            uiRef.Labels.Price.Text = "Floor: $" .. item.FloorPrice
             
-            uiRef.Buttons.QuickSell.Text = "SELL: $" .. math.floor(item.FloorPrice * 0.5)
+            -- Populate Details
+            uiRef.Details.Name.Text = item.Name
+            uiRef.Details.Price.Text = "Value: $" .. item.FloorPrice
+            uiRef.Details.UID.Text = "UID: " .. (item.Id:sub(1,8) .. "...") -- Shorten UID
+            uiRef.Details.Element.Text = "Element: " .. item.Element
+            uiRef.Details.Model.Text = "Model: " .. item.Model
+            uiRef.Details.Size.Text = "Size: " .. string.format("%.1f", item.Size or 1)
             
-            UpdatePreview(uiRef.Viewport, item.Name, item.Model)
-            
-            uiRef.Buttons.Equip.Text = "HOLD"
-            uiRef.Buttons.Equip.BackgroundColor3 = Color3.fromRGB(52, 152, 219)
+            -- Update Sell Button Text
+            uiRef.Details.Buttons.Sell.Text = "SELL: $" .. math.floor(item.FloorPrice * 0.5)
+            uiRef.Details.Buttons.Equip.Text = "HOLD ITEM" -- Reset equip status visuals
+            uiRef.Details.Buttons.Equip.BackgroundColor3 = Color3.fromRGB(52, 152, 219)
         end)
     end
 end
