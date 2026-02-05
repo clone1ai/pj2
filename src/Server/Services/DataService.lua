@@ -13,8 +13,8 @@ local DataService = {}
 local ProfileTemplate = {
     RizzCoins = 1000,
     Inventory = {},   
-    MarketList = {}, -- NEW: Items currently listed for sale
-    Farm = {},        
+    MarketList = {},
+    Farm = {}, -- Format: { {Id="...", Name="...", FloorPrice=..., Position={x,y,z}} }
 }
 
 -- Store Key (Change "Dev_01" to wipe data)
@@ -26,7 +26,7 @@ function DataService.Start()
 
     Players.PlayerAdded:Connect(function(player)
         local profile = ProfileStore:LoadProfileAsync("Player_" .. player.UserId)
-        
+        player:SetAttribute("RizzCoins", profile.Data.RizzCoins)
         if profile ~= nil then
             profile:AddUserId(player.UserId)
             profile:Reconcile()
@@ -61,6 +61,13 @@ function DataService.AdjustCurrency(player, amount)
     local profile = Profiles[player]
     if profile then
         profile.Data.RizzCoins += amount
+        
+        -- [NEW] Sync to Client via Attribute
+        player:SetAttribute("RizzCoins", profile.Data.RizzCoins)
+        
+        -- (Optional) Update legacy leaderstats if you use them
+        local ls = player:FindFirstChild("leaderstats")
+        if ls then ls.Coins.Value = profile.Data.RizzCoins end
     end
 end
 
