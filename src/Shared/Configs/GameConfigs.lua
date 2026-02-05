@@ -6,9 +6,9 @@ GameConfigs.MAX_INVENTORY_SLOTS = 50 --
 
 -- Rarity Layers: Models
 GameConfigs.MODELS = {
-    { Name = "Skibidi", Weight = 60, Multiplier = 1 },   -- Common (x1)
-    { Name = "Nugget",  Weight = 30, Multiplier = 2 },   -- Rare (x2)
-    { Name = "Grimace", Weight = 10, Multiplier = 10 },  -- Legendary (x10)
+    { Name = "67", Weight = 60, Multiplier = 1 },   -- Common (x1)
+    { Name = "Admin Lucky Block",  Weight = 30, Multiplier = 2 },   -- Rare (x2)
+    { Name = "Agarrini la Palini", Weight = 10, Multiplier = 10 },  -- Legendary (x10)
 }
 
 -- Rarity Layers: Elements

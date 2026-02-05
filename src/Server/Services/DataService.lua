@@ -11,8 +11,9 @@ local DataService = {}
 
 -- Default Data Structure
 local ProfileTemplate = {
-    RizzCoins = 1000, -- Free starter money for testing
+    RizzCoins = 1000,
     Inventory = {},   
+    MarketList = {}, -- NEW: Items currently listed for sale
     Farm = {},        
 }
 

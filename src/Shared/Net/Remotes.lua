@@ -21,4 +21,10 @@ function Remotes.GetRemoteFunction(name)
     return rf
 end
 
+-- Ensure these RemoteFunctions exist:
+-- 1. "EquipItem"
+-- 2. "QuickSell"
+-- 3. "ListOnMarket"
+-- 4. "GetInventoryData"
+
 return Remotes
